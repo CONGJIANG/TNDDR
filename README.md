@@ -1,6 +1,6 @@
 #TNDDR: Efficient and doubly robust estimation of COVID-19 vaccine effectiveness under the test-negative design
 
-This repository is the official implementation of [Efficient and doubly robust estimation of COVID-19 vaccine effectiveness under the test-negative design]().
+This repository is the official implementation of [Efficient and doubly robust estimation of COVID-19 vaccine effectiveness under the test-negative design](https://arxiv.org/abs/2310.04578).
 
 ## Introduction
 
