@@ -1,0 +1,157 @@
+# Install and load required packages
+install.packages("randomForest")
+library(randomForest)
+library(dplyr)
+
+# Define function using Random Forest
+element.randomForest <- function(TNDdf_train){
+  # Data splitting
+  set.seed(123)  # Set seed for reproducibility
+  s <- sample(1:length(TNDdf_train$Y), length(TNDdf_train$Y) / 2)
+  TNDdf_train1 <- TNDdf_train[s,]
+  TNDdf_train2 <- TNDdf_train[-s,]
+  
+  # Subset for controls in first split
+  TNDdf_train_ctr1 <- subset(TNDdf_train1, Y == 0)
+  
+  # Train Random Forest on first control subset
+  mod_g1_ctr <- randomForest(
+    V ~ .,  
+    data = subset(TNDdf_train_ctr1, select = -Y)
+  )
+  
+  # Subset for controls in second split
+  TNDdf_train_ctr2 <- subset(TNDdf_train2, Y == 0)
+  
+  # Train Random Forest on second control subset
+  mod_g2_ctr <- randomForest(
+    V ~ .,  
+    data = subset(TNDdf_train_ctr2, select = -Y)
+  )
+  
+  g1_cont <- TNDdf_train$V
+  g1_cont[-s] <- predict(mod_g1_ctr, newdata = as.data.frame(cbind(select(TNDdf_train2, -c(V, Y)), V = rep(1, nrow(TNDdf_train2)), Y = TNDdf_train2$Y)))
+  g1_cont[s] <- predict(mod_g2_ctr, newdata = as.data.frame(cbind(select(TNDdf_train1, -c(V, Y)), V = rep(1, nrow(TNDdf_train1)), Y = TNDdf_train1$Y)))
+  
+  # Train Random Forest models for mu
+  Out_mu1 <- randomForest(
+    Y ~ .,  
+    data = TNDdf_train1
+  )
+  
+  Out_mu2 <- randomForest(
+    Y ~ .,  
+    data = TNDdf_train2
+  )
+  
+  mu1 <- TNDdf_train$Y
+  mu0 <- TNDdf_train$Y
+  mu1[-s] <- predict(Out_mu1, newdata = as.data.frame(cbind(V = 1, select(TNDdf_train2, -c(V, Y)))))
+  mu1[s] <- predict(Out_mu2, newdata = as.data.frame(cbind(V = 1, select(TNDdf_train1, -c(V, Y)))))
+  
+  mu0[-s] <- predict(Out_mu1, newdata = as.data.frame(cbind(V = 0, select(TNDdf_train2, -c(V, Y)))))
+  mu0[s] <- predict(Out_mu2, newdata = as.data.frame(cbind(V = 0, select(TNDdf_train1, -c(V, Y)))))
+  
+  # Train Random Forest models for m0
+  Out_m1 <- randomForest(
+    Y ~ .,  
+    data = subset(TNDdf_train1, select = -V)
+  )
+  
+  Out_m2 <- randomForest(
+    Y ~ .,  
+    data = subset(TNDdf_train2, select = -V)
+  )
+  
+  m0 <- TNDdf_train$Y
+  m0[-s] <- 1 - predict(Out_m1, newdata = select(TNDdf_train2, -c(V, Y)))
+  m0[s] <- 1 - predict(Out_m2, newdata = select(TNDdf_train1, -c(V, Y)))
+  
+  return(list(mu1 = mu1, mu0 = mu0, m0 = m0, g1 = g1_cont, g0 = 1 - g1_cont, w1 = m0 / (1 - mu1), w0 = m0 / (1 - mu0)))
+}
+
+
+
+
+
+# Install and load required packages
+install.packages("nnet")
+library(nnet)
+library(dplyr)
+
+# Define function using Neural Networks
+element.nnet <- function(TNDdf_train){
+  # Data splitting
+  set.seed(123)  # Set seed for reproducibility
+  s <- sample(1:length(TNDdf_train$Y), length(TNDdf_train$Y) / 2)
+  TNDdf_train1 <- TNDdf_train[s,]
+  TNDdf_train2 <- TNDdf_train[-s,]
+  
+  # Scale data for Neural Networks
+  TNDdf_train1_scaled <- as.data.frame(scale(TNDdf_train1))
+  TNDdf_train2_scaled <- as.data.frame(scale(TNDdf_train2))
+  
+  # Subset for controls in first split
+  TNDdf_train_ctr1 <- subset(TNDdf_train1_scaled, Y == 0)
+  
+  # Train Neural Network on first control subset
+  mod_g1_ctr <- nnet(
+    V ~ .,  
+    data = subset(TNDdf_train_ctr1, select = -Y),
+    size = 5, maxit = 200
+  )
+  
+  # Subset for controls in second split
+  TNDdf_train_ctr2 <- subset(TNDdf_train2_scaled, Y == 0)
+  
+  # Train Neural Network on second control subset
+  mod_g2_ctr <- nnet(
+    V ~ .,  
+    data = subset(TNDdf_train_ctr2, select = -Y),
+    size = 5, maxit = 200
+  )
+  
+  g1_cont <- TNDdf_train$V
+  g1_cont[-s] <- predict(mod_g1_ctr, newdata = as.data.frame(cbind(select(TNDdf_train2, -c(V, Y)), V = rep(1, nrow(TNDdf_train2)), Y = TNDdf_train2$Y)), type = "raw")
+  g1_cont[s] <- predict(mod_g2_ctr, newdata = as.data.frame(cbind(select(TNDdf_train1, -c(V, Y)), V = rep(1, nrow(TNDdf_train1)), Y = TNDdf_train1$Y)), type = "raw")
+  
+  # Train Neural Network models for mu
+  Out_mu1 <- nnet(
+    Y ~ .,  
+    data = TNDdf_train1_scaled,
+    size = 5, maxit = 200
+  )
+  
+  Out_mu2 <- nnet(
+    Y ~ .,  
+    data = TNDdf_train2_scaled,
+    size = 5, maxit = 200
+  )
+  
+  mu1 <- TNDdf_train$Y
+  mu0 <- TNDdf_train$Y
+  mu1[-s] <- predict(Out_mu1, newdata = as.data.frame(cbind(V = 1, select(TNDdf_train2, -c(V, Y)))), type = "raw")
+  mu1[s] <- predict(Out_mu2, newdata = as.data.frame(cbind(V = 1, select(TNDdf_train1, -c(V, Y)))), type = "raw")
+  
+  mu0[-s] <- predict(Out_mu1, newdata = as.data.frame(cbind(V = 0, select(TNDdf_train2, -c(V, Y)))), type = "raw")
+  mu0[s] <- predict(Out_mu2, newdata = as.data.frame(cbind(V = 0, select(TNDdf_train1, -c(V, Y)))), type = "raw")
+  
+  # Train Neural Network models for m0
+  Out_m1 <- nnet(
+    Y ~ .,  
+    data = subset(TNDdf_train1_scaled, select = -V),
+    size = 5, maxit = 200
+  )
+  
+  Out_m2 <- nnet(
+    Y ~ .,  
+    data = subset(TNDdf_train2_scaled, select = -V),
+    size = 5, maxit = 200
+  )
+  
+  m0 <- TNDdf_train$Y
+  m0[-s] <- 1 - predict(Out_m1, newdata = select(TNDdf_train2, -c(V, Y)), type = "raw")
+  m0[s] <- 1 - predict(Out_m2, newdata = select(TNDdf_train1, -c(V, Y)), type = "raw")
+  
+  return(list(mu1 = mu1, mu0 = mu0, m0 = m0, g1 = g1_cont, g0 = 1 - g1_cont, w1 = m0 / (1 - mu1), w0 = m0 / (1 - mu0)))
+}
