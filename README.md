@@ -18,6 +18,8 @@ We derived the efficiency theory under the distribution arising from the biased 
  - `dplyr`
  - `haven`
  - `sas7bdat`
+ - `randomForest`
+ - `nnet`
  
 ## Contents
 
