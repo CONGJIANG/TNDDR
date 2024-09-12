@@ -155,3 +155,97 @@ element.nnet <- function(TNDdf_train){
   
   return(list(mu1 = mu1, mu0 = mu0, m0 = m0, g1 = g1_cont, g0 = 1 - g1_cont, w1 = m0 / (1 - mu1), w0 = m0 / (1 - mu0)))
 }
+
+
+
+######## Methods for VE
+### IPW estimator
+mod_IPW <- function(TNDdat, res){
+  TNDdat$ipw <- ifelse(TNDdat$V == 1, 1/res$g1, 1/res$g0)
+  TNDdat$ipw <- ifelse(TNDdat$ipw < 0, 1, TNDdat$ipw)
+  modY.ipw <- glm(Y ~ V, family=binomial(link = "log"), weights = ipw, data=TNDdat)
+  est.ipw <- exp(modY.ipw$coefficients[2])
+  se.ipw <- sqrt(vcovHC(modY.ipw)[2,2])
+  
+  CI_l <- est.ipw *exp(- 1.96 * se.ipw )
+  CI_u <- est.ipw *exp( 1.96 * se.ipw )
+  return(list(est = est.ipw, se = se.ipw, CI =  c(CI_l, CI_u)))
+}
+### EIF based estimator with OUTCOME ratio debiasing weights
+mod_EIF1OUT <- function(TNDdat, res){
+  # proposed eif estimator 1 with Out ratio weights
+  A.1 <- res$w1*res$mu1*((1 - TNDdat$Y)*(TNDdat$V - res$g1))/(res$g1* res$m0)
+  A.0 <- res$w0*res$mu0*((1 - TNDdat$Y)*((1-TNDdat$V) - res$g0))/(res$g0* res$m0)
+  psi.1 <- mean(TNDdat$Y*TNDdat$V/res$g1 - A.1)
+  psi.0 <- mean(TNDdat$Y*(1-TNDdat$V)/res$g0 - A.0)
+  mod_eif <- psi.1/psi.0
+  eifln <-  ((TNDdat$Y*TNDdat$V/res$g1 - A.1)/psi.1) - ((TNDdat$Y*(1-TNDdat$V)/res$g0 - A.0)/ psi.0)
+  varln <-  var(eifln)/nrow(TNDdat)
+  
+  CI_l1 <- exp(log(mod_eif) - 1.96 * sqrt(varln) )
+  CI_u1 <- exp(log(mod_eif) + 1.96 * sqrt(varln) )
+  
+  eifpsi <- (TNDdat$Y*TNDdat$V/res$g1 - A.1)/psi.0 - (psi.1/psi.0)*(TNDdat$Y*(1-TNDdat$V)/res$g0 - A.0)/psi.0
+  var <- var(eifpsi)/nrow(TNDdat)
+  CI_l2 <- mod_eif - 1.96 * sqrt(var) 
+  CI_u2 <- mod_eif + 1.96 * sqrt(var) 
+  return(list( est = mod_eif, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2)))
+}
+### EIF based estimator with PS ratio debiasing weights
+mod_EIF1PS <- function(TNDdat, res){
+  # proposed eif estimator 1 with PS ratio weights
+  A.1 <- res$w1.ps*res$mu1*((1 - TNDdat$Y)*(TNDdat$V - res$g1))/(res$g1* res$m0)
+  A.0 <- res$w0.ps*res$mu0*((1 - TNDdat$Y)*((1-TNDdat$V) - res$g0))/(res$g0* res$m0)
+  psi.1 <- mean(TNDdat$Y*TNDdat$V/res$g1 - A.1)
+  psi.0 <- mean(TNDdat$Y*(1-TNDdat$V)/res$g0 - A.0)
+  mod_eif <- psi.1/psi.0
+  eifln <-  ((TNDdat$Y*TNDdat$V/res$g1 - A.1)/psi.1) - ((TNDdat$Y*(1-TNDdat$V)/res$g0 - A.0)/ psi.0)
+  varln <-  var(eifln)/nrow(TNDdat)
+  
+  CI_l1 <- exp(log(mod_eif) - 1.96 * sqrt(varln) )
+  CI_u1 <- exp(log(mod_eif) + 1.96 * sqrt(varln) )
+  
+  eifpsi <- (TNDdat$Y*TNDdat$V/res$g1 - A.1)/psi.0 - (psi.1/psi.0)*(TNDdat$Y*(1-TNDdat$V)/res$g0 - A.0)/psi.0
+  var <- var(eifpsi)/nrow(TNDdat)
+  CI_l2 <- mod_eif - 1.96 * sqrt(var) 
+  CI_u2 <- mod_eif + 1.96 * sqrt(var) 
+  return(list( est = mod_eif, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2)))
+}
+
+#### proposed TNDDR, SAME as eif1OUT
+mod_EIF2 <- function(TNDdat, res){
+  A.1 <- ((1 - TNDdat$Y)*(TNDdat$V - res$g1))/(res$g1* (1 -res$mu1))
+  A.0 <- ((1 - TNDdat$Y)*((1-TNDdat$V) - res$g0))/(res$g0* (1 - res$mu0))
+  psi.1 <- mean(TNDdat$Y*TNDdat$V/res$g1 - res$mu1*A.1)
+  psi.0 <- mean(TNDdat$Y*(1-TNDdat$V)/res$g0 - res$mu0*A.0)
+  mod_eif2 <- psi.1/psi.0
+  eifln <-  ((TNDdat$Y*TNDdat$V/res$g1 - res$mu1*A.1)/psi.1) - ((TNDdat$Y*(1-TNDdat$V)/res$g0 - res$mu0*A.0)/ psi.0)
+  varln <-  var(eifln)/nrow(TNDdat)
+  
+  CI_l1 <- exp(log(mod_eif2) - 1.96 * sqrt(varln) )
+  CI_u1 <- exp(log(mod_eif2) + 1.96 * sqrt(varln) )
+  
+  eifpsi <- (TNDdat$Y*TNDdat$V/res$g1 - res$mu1*A.1)/psi.0 - (psi.1/psi.0)*(TNDdat$Y*(1-TNDdat$V)/res$g0 - res$mu0*A.0)/psi.0
+  var <- var(eifpsi)/nrow(TNDdat)
+  CI_l2 <- mod_eif2 - 1.96 * sqrt(var) 
+  CI_u2 <- mod_eif2 + 1.96 * sqrt(var) 
+  return(list( est = mod_eif2, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2)))
+}
+
+mod_OutReg<- function(TNDdat, res){
+  mod_OR1 <- mean(res$mu1 * res$w1)/mean(res$mu0 * res$w0)
+  mod_OR2 <- mean(res$mu1 * res$w1.ps)/mean(res$mu0 * res$w0.ps)
+  
+  nbs <- 50
+  bsest<-rep(NA,nbs)
+  for(i in 1:nbs){
+    resamps<-sample(1:nrow(TNDdat),size=nrow(TNDdat),replace=T)
+    datk<-TNDdat[resamps,]
+    res <- element.earth(datk)
+    bsest[i] <- mean(res$mu1 * res$w1)/mean(res$mu0 * res$w0)
+  }
+  bs_var <- var(bsest)
+  CI = quantile(bsest,c(0.025,0.975))
+  return(list(est1 = mod_OR1,CI.OR1 = CI, est2 = mod_OR2 ))
+}
+
