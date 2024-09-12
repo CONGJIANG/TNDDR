@@ -11,42 +11,42 @@ output_nnet <- "FULLnnet500_em05.txt"
 for (i in 1:2) {
   # Generate data
   TNDdat <- datagen(ssize = 1000, em = 0.5)
-
+  
   # Fit models using Random Forest
   res_rf <- element.randomForest(TNDdat)
-
+  
   # Fit models using Neural Network
   res_nnet <- element.nnet(TNDdat)
-
+  
   # Random Forest Results
   est_rf <- mod_IPW(TNDdat, res_rf)
   est1_rf <- est_rf$est
   se1_rf <- est_rf$se
   CI1_rf <- est_rf$CI
-
+  
   est2_rf <- mod_OutReg(TNDdat, res_rf, method = "RandomForest")
   est2_rf_val <- est2_rf$est
   CI2_rf <- est2_rf$CI.OR
-
+  
   est4_rf <- mod_EIF1OUT(TNDdat, res_rf)
   est4_rf_val <- est4_rf$est
   OUTvarln_rf <- est4_rf$varln
   OUTvar_rf <- est4_rf$var
   CI4_rf <- est4_rf$CI1
-
+  
   est5_rf <- mod_EIF1PS(TNDdat, res_rf)
   est5_rf_val <- est5_rf$est
   PSvarln_rf <- est5_rf$varln
   PSvar_rf <- est5_rf$var
   CI5_rf <- est5_rf$CI1
-
+  
   est6_rf <- mod_EIF2(TNDdat, res_rf)
   est6_rf_val <- est6_rf$est
   varln_rf <- est6_rf$varln
   var_rf <- est6_rf$var
   CI6_rf <- est6_rf$CI1
   CI7_rf <- est6_rf$CI2
-
+  
   # Save results for Random Forest
   write(
     c(
@@ -58,36 +58,36 @@ for (i in 1:2) {
     ncolumns = 50,
     append = TRUE
   )
-
+  
   # Neural Network Results
   est_nnet <- mod_IPW(TNDdat, res_nnet)
   est1_nnet <- est_nnet$est
   se1_nnet <- est_nnet$se
   CI1_nnet <- est_nnet$CI
-
+  
   est2_nnet <- mod_OutReg(TNDdat, res_nnet, method = "NN")
   est2_nnet_val <- est2_nnet$est
   CI2_nnet <- est2_nnet$CI.OR
-
+  
   est4_nnet <- mod_EIF1OUT(TNDdat, res_nnet)
   est4_nnet_val <- est4_nnet$est
   OUTvarln_nnet <- est4_nnet$varln
   OUTvar_nnet <- est4_nnet$var
   CI4_nnet <- est4_nnet$CI1
-
+  
   est5_nnet <- mod_EIF1PS(TNDdat, res_nnet)
   est5_nnet_val <- est5_nnet$est
   PSvarln_nnet <- est5_nnet$varln
   PSvar_nnet <- est5_nnet$var
   CI5_nnet <- est5_nnet$CI1
-
+  
   est6_nnet <- mod_EIF2(TNDdat, res_nnet)
   est6_nnet_val <- est6_nnet$est
   varln_nnet <- est6_nnet$varln
   var_nnet <- est6_nnet$var
   CI6_nnet <- est6_nnet$CI1
   CI7_nnet <- est6_nnet$CI2
-
+  
   # Save results for Neural Network
   write(
     c(
@@ -159,12 +159,12 @@ datagen <- function(seed = sample(1:1000000, size = 1),
                     OR_W1 = 1, OR_W2 = 3.5, em = 0.5,
                     cfV0 = FALSE, cfV1 = FALSE, return_full = FALSE, co_inf_para = 0.00001) {
   set.seed(seed)
-
+  
   # Generate confounders and covariates
   C <- runif(n = popsize, -3, 3)  # Continuous confounder
   U1 <- rbinom(n = popsize, size = 1, prob = 0.5)  # Unmeasured binary covariate
   U2 <- rbinom(n = popsize, size = 1, prob = 0.5)  # Unmeasured binary covariate
-
+  
   # Generate Vaccination Status
   if (cfV0 == TRUE) {
     V <- rep(0, popsize)
@@ -173,24 +173,24 @@ datagen <- function(seed = sample(1:1000000, size = 1),
   } else {
     V <- rbinom(n = popsize, size = 1, prob = plogis(1.5 + 0.3 * C - abs(C) - sin(pi * C)))
   }
-
+  
   # Set independent baseline probabilities for infections
   p_I1 <- sqrt(co_inf_para)  # Marginal probability of I1
   p_I2 <- sqrt(co_inf_para)  # Marginal probability of I2
-
+  
   # Convert to log-odds for logistic regression
   bsl_I1 <- qlogis(p_I1)
   bsl_I2 <- qlogis(p_I2)
-
+  
   # Generate independent infections
   I1 <- rbinom(n = popsize, size = 1, prob = plogis(0.5 * C + bsl_I1 + 0.5 * U1))  # Infection with other viruses
   lambda_covid <- bsl_I2 + 0.5 * C + 0.25 * exp(C) -log(OR_C)*V + em * V * C + log(3) * U2 * (1.5 - V) - 2 * U1
   I2 <- rbinom(n = popsize, size = 1, prob = plogis(lambda_covid))  # Infection with SARS-CoV-2
-
+  
   # Calculate the percentage of co-infections
   co_inf <- sum(I1 == 1 & I2 == 1)
   per_co_inf <- co_inf / popsize * 100
-
+  
   # Generate symptoms W1 and W2
   W1 <- rep(0, popsize)
   W1[I1 == 1] <- rbinom(
@@ -198,47 +198,47 @@ datagen <- function(seed = sample(1:1000000, size = 1),
     size = 1,
     prob = plogis(2 + 0.5 * C[I1 == 1] - log(OR_W1) * V[I1 == 1] - 0.5 * U1[I1 == 1])
   )
-
+  
   W2 <- rep(0, popsize)
   W2[I2 == 1] <- rbinom(
     n = sum(I2 == 1),
     size = 1,
     prob = plogis(-5 + 1 * C[I2 == 1] - log(OR_W2) * V[I2 == 1] - 1 * U1[I2 == 1] + 0.5 * U2[I2 == 1] * (1 - V[I2 == 1]))
   )
-
+  
   # Combine symptoms into a unified status
   W <- pmax(W1, W2)
-
+  
   # Generate hospitalization status H1 and H2
   lambda_h1 <- ifelse(W1 == 1, 2 * C - 0.5 * U1, 0)
   lambda_h2 <- ifelse(W2 == 1, 0.5 * C - 0.5 * U1, 0)
-
+  
   H1 <- rep(0, popsize)
   H1[W1 == 1] <- rbinom(
     n = sum(W1 == 1),
     size = 1,
     prob = plogis(lambda_h1[W1 == 1])
   )
-
+  
   H2 <- rep(0, popsize)
   H2[W2 == 1] <- rbinom(
     n = sum(W2 == 1),
     size = 1,
     prob = plogis(lambda_h2[W2 == 1])
   )
-
+  
   # Overall hospitalization status
   H <- pmax(H1, H2)
-
+  
   # Selection on outcome for testing (hospitalization)
   R <- sample(which(H == 1), ssize, replace = TRUE)  # Sample randomly from those hospitalized
-
+  
   if (return_full == FALSE) {
     dat <- as.data.frame(cbind(Y = I2, V = V, C = C)[R, ])
   } else {
     dat <- as.data.frame(cbind(Infec_COVID = I2, Infec = I1, H = H, W = W, V = V, C = C))
   }
-
+  
   return(dat)
 }
 
