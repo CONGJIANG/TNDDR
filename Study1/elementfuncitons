@@ -1,12 +1,13 @@
 # Install and load required packages
 install.packages("randomForest")
+library(sandwich)
 library(randomForest)
 library(dplyr)
 
 # Define function using Random Forest
 element.randomForest <- function(TNDdf_train){
   # Data splitting
-  set.seed(123)  # Set seed for reproducibility
+  #TNDdf_train <- datagen(ssize = 1000, em = 0.5)
   s <- sample(1:length(TNDdf_train$Y), length(TNDdf_train$Y) / 2)
   TNDdf_train1 <- TNDdf_train[s,]
   TNDdf_train2 <- TNDdf_train[-s,]
@@ -67,15 +68,11 @@ element.randomForest <- function(TNDdf_train){
   m0[-s] <- 1 - predict(Out_m1, newdata = select(TNDdf_train2, -c(V, Y)))
   m0[s] <- 1 - predict(Out_m2, newdata = select(TNDdf_train1, -c(V, Y)))
   
-  return(list(mu1 = mu1, mu0 = mu0, m0 = m0, g1 = g1_cont, g0 = 1 - g1_cont, w1 = m0 / (1 - mu1), w0 = m0 / (1 - mu0)))
+  return(list(mu1 = mu1, mu0 = mu0, m0 = m0, g1 = pmin(pmax(g1_cont, 0.01), 0.99), g0 = 1 - pmin(pmax(g1_cont, 0.01), 0.99),
+              w1 = pmin(pmax(m0 / (1 - mu1), 0.01), 0.99), w0 = pmin(pmax(m0 / (1 - mu0), 0.01), 0.99)))
 }
 
 
-
-
-
-# Install and load required packages
-install.packages("nnet")
 library(nnet)
 library(dplyr)
 
@@ -153,7 +150,8 @@ element.nnet <- function(TNDdf_train){
   m0[-s] <- 1 - predict(Out_m1, newdata = select(TNDdf_train2, -c(V, Y)), type = "raw")
   m0[s] <- 1 - predict(Out_m2, newdata = select(TNDdf_train1, -c(V, Y)), type = "raw")
   
-  return(list(mu1 = mu1, mu0 = mu0, m0 = m0, g1 = g1_cont, g0 = 1 - g1_cont, w1 = m0 / (1 - mu1), w0 = m0 / (1 - mu0)))
+  return(list(mu1 = mu1, mu0 = mu0, m0 = m0, g1 = pmin(pmax(g1_cont, 0.01), 0.99), g0 = 1 - pmin(pmax(g1_cont, 0.01), 0.99),
+              w1 = pmin(pmax(m0 / (1 - mu1), 0.01), 0.99), w0 = pmin(pmax(m0 / (1 - mu0), 0.01), 0.99)))
 }
 
 
@@ -162,7 +160,6 @@ element.nnet <- function(TNDdf_train){
 ### IPW estimator
 mod_IPW <- function(TNDdat, res){
   TNDdat$ipw <- ifelse(TNDdat$V == 1, 1/res$g1, 1/res$g0)
-  TNDdat$ipw <- ifelse(TNDdat$ipw < 0, 1, TNDdat$ipw)
   modY.ipw <- glm(Y ~ V, family=binomial(link = "log"), weights = ipw, data=TNDdat)
   est.ipw <- exp(modY.ipw$coefficients[2])
   se.ipw <- sqrt(vcovHC(modY.ipw)[2,2])
@@ -232,20 +229,35 @@ mod_EIF2 <- function(TNDdat, res){
   return(list( est = mod_eif2, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2)))
 }
 
-mod_OutReg<- function(TNDdat, res){
+mod_OutReg<- function(TNDdat, res, method = "RandomForest"){
   mod_OR1 <- mean(res$mu1 * res$w1)/mean(res$mu0 * res$w0)
-  mod_OR2 <- mean(res$mu1 * res$w1.ps)/mean(res$mu0 * res$w0.ps)
-  
   nbs <- 50
   bsest<-rep(NA,nbs)
   for(i in 1:nbs){
     resamps<-sample(1:nrow(TNDdat),size=nrow(TNDdat),replace=T)
     datk<-TNDdat[resamps,]
-    res <- element.earth(datk)
+    # Fit model based on the chosen method
+    if (method == "HAL") {
+      # HAL using glmnet (Highly Adaptive Lasso)
+      res <- element.HAL(datk)
+    } else if (method == "Earth") {
+      # Earth model (MARS - Multivariate Adaptive Regression Splines)
+      res <- element.earth(datk)
+    } else if (method == "RandomForest") {
+      # Random Forest
+      res <- element.randomForest(datk)
+    } else if (method == "NN") {
+      # Neural Network
+      res <- element.nnet(datk)
+    } else {
+      stop("Unsupported method. Please choose from 'HAL', 'Earth', 'RandomForest', or 'NN'.")
+    }
     bsest[i] <- mean(res$mu1 * res$w1)/mean(res$mu0 * res$w0)
   }
   bs_var <- var(bsest)
   CI = quantile(bsest,c(0.025,0.975))
-  return(list(est1 = mod_OR1,CI.OR1 = CI, est2 = mod_OR2 ))
+  return(list(est = mod_OR1, CI.OR = CI))
 }
+
+
 
