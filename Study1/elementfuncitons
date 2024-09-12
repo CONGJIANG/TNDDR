@@ -259,5 +259,3 @@ mod_OutReg<- function(TNDdat, res, method = "RandomForest"){
   return(list(est = mod_OR1, CI.OR = CI))
 }
 
-
-
