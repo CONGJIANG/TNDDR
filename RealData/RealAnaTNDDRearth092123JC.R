@@ -15,7 +15,7 @@ require("dplyr") # to use select function
 require("sandwich")
 require("haven")
 require("sas7bdat")
-library(earth)
+library("earth")
 
 
 # Load a SAS dataset
