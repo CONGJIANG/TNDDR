@@ -39,7 +39,10 @@ We derived the efficiency theory under the distribution arising from the biased 
      
      1). `Study2Table2.R`: codes for Table 2, which displays results from the four scenarios, with different sample sizes 
      
-     Folder Realdata: codes for Realdata analysis
+     Folder Study 3: codes for Study 3 (exploring the impact of co-infection rates on TNDDR, violating control exchangeability)
      
+     1). `Study3Table3.R`: codes for Table 3, which displays results from the two scenarios, with different sample sizes 
+     
+     Folder Realdata: codes for Realdata analysis
  
 

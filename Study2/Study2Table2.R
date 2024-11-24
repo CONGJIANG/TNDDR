@@ -1,530 +1,328 @@
-#Common data-generating function
+# Load necessary libraries
+library(dplyr)
+library(randomForest)
+library(nnet)
+library(earth)
+require("dplyr") # to use select function
+require("sandwich")
+require("haven")
+require("sas7bdat")
+require("hal9001")
 
-#popsize set at 1500000, can increase in large ssize is needed
-#ssize set at 500, may have trouble when not enough patient available
+source("TrueValue.R")
 
-#Defaults (scenario 1) true marg RR = 
-#OR_C<-3 #effect of vaccine on covid
-#OR_WI<-1 #no effect of vaccine on W from other infection
-#OR_WC<-5 #effect of vaccine on covid symptoms
-#OR_H<-1.5 #effect of vaccine on hospitalization among those with symptoms
-datagen<-function(seed=sample(1:1000000,size=1),ssize=500,popsize=1500000,OR_C=1.5,OR_WI=1,OR_WC=3.5,OR_H=1.5,em=0,cfV0=F,cfV1=F,return_full=F){
-  set.seed(seed)
+element_glm <- function(TNDdf_train, ps_model, out_model1, out_model2) {
+  # Data splitting
+  s <- sample(1:nrow(TNDdf_train), nrow(TNDdf_train) / 2)
+  TNDdf_train1 <- TNDdf_train[s,]
+  TNDdf_train2 <- TNDdf_train[-s,]
   
-  #generate data
-  C<-runif(n=popsize, -3, 3)
-  U1<-rbinom(n=popsize,size=1,prob=0.5) #affects both
-  U2<-rbinom(n=popsize,size=1,prob=0.5) #affects covid
+  TNDdf_train_ctr1 <- subset(TNDdf_train1, Y==0)
+  TNDdf_train_ctr2 <- subset(TNDdf_train2, Y==0)
+  # Training glm models for the treatment effect
+  mod_g1_ctr <- glm(ps_model, data = subset(TNDdf_train_ctr1, select = -Y), family = binomial())
+  mod_g2_ctr <- glm(ps_model, data = subset(TNDdf_train_ctr2, select = -Y), family = binomial())
   
-  if(cfV0==T) V=rep(0,popsize); if(cfV1==T) V=rep(1,popsize);
-  if(cfV0==F&cfV1==F){
-    V<-rbinom(prob=plogis(1.5 + 0.3*C - abs(C) - sin(pi*C) ),size=1,n=popsize) #prevalence is around 0.61
-  }
-  #Infection (with something) has some common risk factors U1 and C
-  Infec<-rbinom(prob=plogis(0.5*C-5+0.5*U1),size=1,n=popsize) #current prevalence around 0.007
+  g1_cont <- TNDdf_train$V
+  g1_cont[-s] <- predict(mod_g1_ctr, newdata = as.data.frame(cbind(select(TNDdf_train2, -c(V, Y)), V = rep(1, nrow(TNDdf_train2)), Y = TNDdf_train2$Y)), type = "response")
+  g1_cont[s] <- predict(mod_g2_ctr, newdata = as.data.frame(cbind(select(TNDdf_train1, -c(V, Y)), V = rep(1, nrow(TNDdf_train1)), Y = TNDdf_train1$Y)), type = "response")
   
-  #Infected with COVID
-  Infec_COVID<- rbinom(prob=plogis( -log(OR_C)*V -4 + 2*C - 0.15*exp(C)+log(2)*U2*(1.5-V)-2*U1), size=1,n=popsize) #0.009
-  #symptoms based on infection
-  #can come from either or both infections, if present
-  W=rep(0,popsize)
-  W[Infec==1]<-rbinom(prob=plogis(2+0.5*C[Infec==1]-log(OR_WI)*V[Infec==1]-0.5*U1[Infec==1]),size=1, n=sum(Infec==1))
-  W[Infec_COVID==1]<-rbinom(prob=plogis(-5+1*C[Infec_COVID==1]-log(OR_WC)*V[Infec_COVID==1]-1*U1[Infec_COVID==1]+0.5*U2[Infec_COVID==1]*(1-V[Infec_COVID==1])),size=1, n=sum(Infec_COVID))
-  #mean(W[Infec==1|Infec_COVID==1]) #25%
-  #mean(W[Infec_COVID==1]) #39%
-  #mean(W[Infec==1]) #12%
-  #mean(W[Infec_COVID==1&V==1]) #22%
+  # Training glm models for the outcome
+  Out_mu1 <- glm(out_model1, data = TNDdf_train1, family = binomial())
+  Out_mu2 <- glm(out_model1, data = TNDdf_train2, family = binomial())
   
-  #hospitalization, only possible if symptoms present
-  H=rep(0,popsize)
-  H[W==1]<-rbinom(prob=plogis(1+0.5*C[W==1]+log(OR_H)*V[W==1]-0.5*U1[W==1]),size=1,n=sum(W==1))
-  #mean(H[W==1]) #83% with severe symptoms go to hospital
+  mu1 <- TNDdf_train$Y
+  mu0 <- TNDdf_train$Y
   
-  #selection on outcome for testing (does not condition on infectious status, just being in the hospital)
-  R<-sample(which(H==1),ssize) #sample randomly from those in hospital to control the study size
+  mu1[-s] <- predict(Out_mu1, newdata = as.data.frame(cbind(V = 1, select(TNDdf_train2, -c(V, Y)))), type = "response")
+  mu1[s] <- predict(Out_mu2, newdata = as.data.frame(cbind(V = 1, select(TNDdf_train1, -c(V, Y)))), type = "response")
   
-  if(return_full==F){
-    dat<-as.data.frame(cbind(Y=Infec_COVID,V=V,C=C)[R,])
-  } else{dat<-as.data.frame(cbind(Infec_COVID=Infec_COVID,Infec=Infec,H=H,W=W,V=V,C=C))}
-  return(dat)
+  mu0[-s] <- predict(Out_mu1, newdata = as.data.frame(cbind(V = 0, select(TNDdf_train2, -c(V, Y)))), type = "response")
+  mu0[s] <- predict(Out_mu2, newdata = as.data.frame(cbind(V = 0, select(TNDdf_train1, -c(V, Y)))), type = "response")
+  
+  # Training glm models for m0
+  Out_m1 <- glm(out_model2, data = subset(TNDdf_train1, select = -V), family = binomial)
+  Out_m2 <- glm(out_model2, data = subset(TNDdf_train2, select = -V), family = binomial)
+  
+  m0 <- TNDdf_train$Y
+  m0[-s] <- 1 - predict(Out_m1, newdata = select(TNDdf_train2, -c(V, Y)), type = "response")
+  m0[s] <- 1 - predict(Out_m2, newdata = select(TNDdf_train1, -c(V, Y)), type = "response")
+  
+  summary(Out_m1)
+  mu1 <- pmin(pmax(mu1, 0.001), 0.999)
+  mu0 <- pmin(pmax(mu0, 0.001), 0.999)
+  m0 <- pmin(pmax(m0, 0.001), 0.999)
+  g1 <- pmin(pmax(g1_cont, 0.001), 0.999)
+  g0 <- 1 - pmin(pmax(g1_cont, 0.001), 0.999)
+  
+  return(list(mu1 = mu1, mu0 = mu0, m0 = m0, g1 = g1,g0 = g0, w1 = m0 / (1 - mu1),w0 = m0 / (1 - mu0)))
 }
 
-ssize=5000
-dat<-datagen(ssize= ssize, em=0)
-sum(dat$Y)/ssize
 
-######################################################################
-###Run Simulation Study
-# IPW estimator
-library(sandwich)
-# IPW correct
-mod_IPW_c <- function(dat){
-  TNDmod_g_col<-glm(V ~  C + abs(C) +  sin(pi*C),family=binomial(),data=dat,subset=(dat$Y==0))
-  g1_cont<-predict(TNDmod_g_col,type="response",newdata=as.data.frame(cbind(C=dat$C,V=dat$V,Y=dat$Y)))
-  g1_cont <- pmax(pmin(g1_cont, 1), 0)
-  ipw <- ifelse(dat$V == 1, 1/g1_cont, 1/(1 - g1_cont))
-  modY.ipw <- glm(Y ~ V, family=binomial(link = "logit"), weights = ipw, data=dat)
+
+
+######## Methods for VE
+### IPW estimator
+mod_IPW1GLM <- function(TNDdat, res){
+  TNDdat$ipw <- ifelse(TNDdat$V == 1, 1/res$g1, 1/res$g0)
+  modY.ipw <- glm(Y ~ V, family = poisson(link = "log"), weights = ipw, data = TNDdat)
+  
   est.ipw <- exp(modY.ipw$coefficients[2])
-  se.ipw <- sqrt(vcovHC(modY.ipw)[2,2])
-  CI_l <- est.ipw *exp(- 1.96 * se.ipw )
-  CI_u <- est.ipw *exp( 1.96 * se.ipw )
-  return(list(est = est.ipw, se = se.ipw, CI =  c(CI_l, CI_u)))
-}
-# IPW wrong
-mod_IPW_w <- function(dat){
-  TNDmod_g_col<-glm(V ~ 1 ,family=binomial(),data=dat,subset=(dat$Y==0))
-  g1_cont<-predict(TNDmod_g_col,type="response",newdata=as.data.frame(cbind(C=dat$C,V=dat$V,Y=dat$Y)))
-  g1_cont <- pmax(pmin(g1_cont, 1), 0)
-  ipw <- ifelse(dat$V == 1, 1/g1_cont, 1/(1 - g1_cont))
-  modY.ipw <- glm(Y ~ V, family=binomial(link = "logit"), weights = ipw, data=dat)
-  est.ipw <- exp(modY.ipw$coefficients[2])
-  se.ipw <- sqrt(vcovHC(modY.ipw)[2,2])
+  se.ipw <- sqrt(vcovHC(modY.ipw, type = "HC0")[2,2])
+  
   CI_l <- est.ipw *exp(- 1.96 * se.ipw )
   CI_u <- est.ipw *exp( 1.96 * se.ipw )
   return(list(est = est.ipw, se = se.ipw, CI =  c(CI_l, CI_u)))
 }
 
-# outcome regression correct
-mod_OR_c1 <- function(dat){
-  TNDmod<-glm(Y~ V + C + exp(C),family=binomial(),data=dat)
-  mu1=predict(TNDmod,newdata=as.data.frame(cbind(V=1,C=dat$C)),type="response")
-  mu0=predict(TNDmod,newdata=as.data.frame(cbind(V=0,C=dat$C)),type="response")
-  
-  TNDmod1<-glm(Y ~ C + exp(C),family=binomial(),data=dat)
-  preY=predict(TNDmod1,type="response")
-  mu1 <- pmax(pmin(mu1, 1), 0)
-  mu0 <- pmax(pmin(mu0, 1), 0)
-  preY <- pmax(pmin(preY, 1), 0)
-  w1 = (1 - preY)/(1 - mu1)
-  w0 = (1 - preY)/(1 - mu0)
-  Q1 = w1 * mu1
-  Q0 = w0 * mu0
-  est <- mean(Q1)/mean(Q0)
-  return(list(est = est))
-}
-
-mod_OR_c <- function(dat){
-  est <- mod_OR_c1(dat)$est
-  nbs <- 50
-  bsest<-rep(NA,nbs)
-  for(i in 1:nbs){
-    resamps<-sample(1:nrow(dat),size=nrow(dat),replace=T)
-    datk<-dat[resamps,]
-    bsest[i] <- mod_OR_c1(datk)$est
+mod_IPW <- function(TNDdat, res, bootstrap_CI = TRUE, ps_model, out_model1, out_model2){
+  IPW.est <- mean(TNDdat$Y*TNDdat$V/res$g1)/mean(TNDdat$Y*(1-TNDdat$V)/res$g0)
+  if (bootstrap_CI) {
+    nbs <- 200
+    bsest <- rep(NA, nbs)
+    
+    for(i in 1:nbs){
+      resamps <- sample(1:nrow(TNDdat), size = nrow(TNDdat), replace = TRUE)
+      datk <- TNDdat[resamps,]
+      res <- element_glm(datk, ps_model, out_model1, out_model2)
+      bsest[i] <- mean(datk$Y*datk$V/res$g1)/mean(datk$Y*(1-datk$V)/res$g0)
+    }
+    
+    bs_var <- var(bsest)
+    CI <- quantile(bsest, c(0.025, 0.975), na.rm = TRUE)
+  } else {
+    CI <- NA
   }
-  bs_var <- var(bsest)
-  CI = quantile(bsest,c(0.025,0.975))
-  return( list(est = est, CI = as.vector(CI)) )
+  return(list(est = IPW.est, CI = CI))
 }
 
 
-#  outcome regression wrong
-mod_OR_w1 <- function(dat){
-  TNDmod<-glm(Y ~ V,family=binomial(),data=dat)
-  mu1=predict(TNDmod,newdata=as.data.frame(cbind(V=1,C=dat$C)),type="response")
-  mu0=predict(TNDmod,newdata=as.data.frame(cbind(V=0,C=dat$C)),type="response")
-  TNDmod1<-glm(Y ~ 1,family=binomial(),data=dat)
-  preY=predict(TNDmod1,type="response")
-  mu1 <- pmax(pmin(mu1, 1), 0)
-  mu0 <- pmax(pmin(mu0, 1), 0)
-  preY <- pmax(pmin(preY, 1), 0)
-  w1 = (1 - preY)/(1 - mu1)
-  w0 = (1 - preY)/(1 - mu0)
-  Q1 = w1 * mu1
-  Q0 = w0 * mu0
-  (est <- mean(Q1)/mean(Q0))
-  return(list(est = est))
-}
 
-mod_OR_w <- function(dat){
-  est <- mod_OR_w1(dat)$est
-  nbs <- 50
-  bsest<-rep(NA,nbs)
-  for(i in 1:nbs){
-    resamps<-sample(1:nrow(dat),size=nrow(dat),replace=T)
-    datk<-dat[resamps,]
-    bsest[i] <- mod_OR_w1(datk)$est
+#### proposed TNDDR
+mod_EIF2 <- function(TNDdat, res, bootstrap_CI = TRUE){
+  A.1 <- ((1 - TNDdat$Y)*(TNDdat$V - res$g1))/(res$g1* (1 -res$mu1))
+  A.0 <- ((1 - TNDdat$Y)*((1-TNDdat$V) - res$g0))/(res$g0* (1 - res$mu0))
+  psi.1 <- mean(TNDdat$Y*TNDdat$V/res$g1 - res$mu1*A.1)
+  psi.0 <- mean(TNDdat$Y*(1-TNDdat$V)/res$g0 - res$mu0*A.0)
+  mod_eif2 <- pmin(pmax(psi.1/psi.0, 0.0001), 0.9999)
+  eifln <-  ((TNDdat$Y*TNDdat$V/res$g1 - res$mu1*A.1 - psi.1)/psi.1) - ((TNDdat$Y*(1-TNDdat$V)/res$g0 - res$mu0*A.0-psi.0)/ psi.0)
+  varln <-  var(eifln)/nrow(TNDdat)
+  
+  CI_l1 <- exp(log(mod_eif2) - 1.96 * sqrt(varln) )
+  CI_u1 <- exp(log(mod_eif2) + 1.96 * sqrt(varln) )
+  
+  eifpsi <- ((TNDdat$Y*TNDdat$V/res$g1 - res$mu1*A.1 - psi.1)/psi.0) - ((psi.1/psi.0)*(TNDdat$Y*(1-TNDdat$V)/res$g0 - res$mu0*A.0 - psi.0)/psi.0)
+  var <- var(eifpsi)/nrow(TNDdat)
+  CI_l2 <- mod_eif2 - 1.96 * sqrt(var)
+  CI_u2 <- mod_eif2 + 1.96 * sqrt(var)
+  
+  
+  varn2 <- mean((mod_eif2* TNDdat$Y*TNDdat$V/res$g1 - res$mu1*A.1 - TNDdat$Y*(1-TNDdat$V)/res$g0 - res$mu0*A.0)^2)
+  denJ <- psi.0^2
+  var2 <- varn2/(denJ * nrow(TNDdat))
+  CI_l3 <- mod_eif2 - 1.96 * sqrt(var2)
+  CI_u3 <- mod_eif2 + 1.96 * sqrt(var2)
+  
+  if (bootstrap_CI) {
+    nbs <- 500
+    bsest <- rep(NA, nbs)
+    for(i in 1:nbs){
+      resamps <- sample(1:nrow(TNDdat), size = nrow(TNDdat), replace = TRUE)
+      datk <- TNDdat[resamps,]
+      res <- element_glm(datk, ps_model, out_model1, out_model2)
+      A.1[i] <- ((1 - TNDdat$Y)*(TNDdat$V - res$g1))/(res$g1* (1 -res$mu1))
+      A.0[i] <- ((1 - TNDdat$Y)*((1-TNDdat$V) - res$g0))/(res$g0* (1 - res$mu0))
+      psi.1[i] <- mean(TNDdat$Y*TNDdat$V/res$g1 - res$mu1*A.1)
+      psi.0[i] <- mean(TNDdat$Y*(1-TNDdat$V)/res$g0 - res$mu0*A.0)
+      bsest[i] <- pmin(pmax(psi.1[i]/psi.0[i], 0.001), 0.999)
+    }
+    bs_var <- var(bsest)
+    CI.b <- quantile(bsest, c(0.025, 0.975), na.rm = TRUE)
+  } else {
+    CI.b <- NA
   }
-  bs_var <- var(bsest)
-  CI = quantile(bsest,c(0.025,0.975))
-  return( list(est = est, CI = as.vector(CI)) )
+  
+  return(list( est = mod_eif2, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2), CI3 =  c(CI_l3, CI_u3), CI.boots = CI.b))
 }
 
-######################################################################
-# EIF estimator 1 (Equation 10):
-# S1) both are correct
-modEIF1a<-function(dat){
-  TNDmod_g_col<-glm(V~  C + abs(C) +  sin(pi*C),family=binomial(),data=dat,subset=(dat$Y==0))
-  g1_cont<-predict(TNDmod_g_col,type="response",newdata=as.data.frame(cbind(C=dat$C,V=dat$V,Y=dat$Y)));
-  g1_cont <- pmax(pmin(g1_cont, 1), 0)
-  g0_cont <- 1 - g1_cont
-  TNDmod1<-glm(Y ~ C + exp(C),family=binomial(),data=dat)
-  preY=predict(TNDmod1,type="response")
-  TNDmod<-glm(Y~ V + C + exp(C),family=binomial(),data=dat)
-  mu1=predict(TNDmod,newdata=as.data.frame(cbind(V=1,C=dat$C)),type="response")
-  mu0=predict(TNDmod,newdata=as.data.frame(cbind(V=0,C=dat$C)),type="response")
-  mu1 <- pmax(pmin(mu1, 1), 0)
-  mu0 <- pmax(pmin(mu0, 1), 0)
-  preY <- pmax(pmin(preY, 1), 0)
-  w1 = (1 - preY)/(1 - mu1)
-  w0 = (1 - preY)/(1 - mu0)
-  Q1 = w1 * mu1
-  Q0 = w0 * mu0
-  
-  A1 <- (1 - dat$Y)*(dat$V - g1_cont)/(g1_cont* (1 - preY))
-  A0 <- (1 - dat$Y)*((1-dat$V) - g0_cont)/(g0_cont* (1 - preY))
-  psi.1 <- mean(dat$Y*dat$V/g1_cont - Q1*A1)
-  psi.0 <- mean(dat$Y*(1-dat$V)/g0_cont - Q0*A0)
-  mod_eif <- psi.1/psi.0
-  eifln <-  ((dat$Y*dat$V/g1_cont - Q1*A1)/psi.1) - ((dat$Y*(1-dat$V)/g0_cont - Q0*A0)/ psi.0)
-  varln <-  var(eifln)/nrow(dat)
-  
-  CI_l1 <- exp(log(mod_eif) - 1.96 * sqrt(varln) )
-  CI_u1 <- exp(log(mod_eif) + 1.96 * sqrt(varln) )
-  
-  eifpsi <- (dat$Y*dat$V/g1_cont - Q1*A1)/psi.0 - (psi.1/psi.0)*(dat$Y*(1-dat$V)/g0_cont - Q0*A0)/psi.0
-  var <- var(eifpsi)/nrow(dat)
-  CI_l2 <- mod_eif - 1.96 * sqrt(var) 
-  CI_u2 <- mod_eif + 1.96 * sqrt(var) 
-  return(list( est = mod_eif, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2)))
-}
-
-modEIF1a(dat)
-# S2) Out is correct, but PS is wrong
-modEIF1b<-function(dat){
-  TNDmod_g_col<-glm(V~  1,family=binomial(),data=dat,subset=(dat$Y==0))
-  g1_cont<-predict(TNDmod_g_col,type="response",newdata=as.data.frame(cbind(C=dat$C,V=dat$V,Y=dat$Y)))
-  g1_cont <- pmax(pmin(g1_cont, 1), 0)
-  g0_cont <- 1 - g1_cont
-  TNDmod1<-glm(Y ~ C + exp(C),family=binomial(),data=dat)
-  preY=predict(TNDmod1,type="response")
-  
-  TNDmod<-glm(Y~ V + C + exp(C),family=binomial(),data=dat)
-  mu1=predict(TNDmod,newdata=as.data.frame(cbind(V=1,C=dat$C)),type="response")
-  mu0=predict(TNDmod,newdata=as.data.frame(cbind(V=0,C=dat$C)),type="response")
-  mu1 <- pmax(pmin(mu1, 1), 0)
-  mu0 <- pmax(pmin(mu0, 1), 0)
-  preY <- pmax(pmin(preY, 1), 0)
-  w1 = (1 - preY)/(1 - mu1)
-  w0 = (1 - preY)/(1 - mu0)
-  Q1 = w1 * mu1
-  Q0 = w0 * mu0
-  
-  A1 <- (1 - dat$Y)*(dat$V - g1_cont)/(g1_cont* (1 - preY))
-  A0 <- (1 - dat$Y)*((1-dat$V) - g0_cont)/(g0_cont* (1 - preY))
-  psi.1 <- mean(dat$Y*dat$V/g1_cont - Q1*A1)
-  psi.0 <- mean(dat$Y*(1-dat$V)/g0_cont - Q0*A0)
-  mod_eif <- psi.1/psi.0
-  eifln <-  ((dat$Y*dat$V/g1_cont - Q1*A1)/psi.1) - ((dat$Y*(1-dat$V)/g0_cont - Q0*A0)/ psi.0)
-  varln <-  var(eifln)/nrow(dat)
-  
-  CI_l1 <- exp(log(mod_eif) - 1.96 * sqrt(varln) )
-  CI_u1 <- exp(log(mod_eif) + 1.96 * sqrt(varln) )
-  
-  eifpsi <- (dat$Y*dat$V/g1_cont - Q1*A1)/psi.0 - (psi.1/psi.0)*(dat$Y*(1-dat$V)/g0_cont - Q0*A0)/psi.0
-  var <- var(eifpsi)/nrow(dat)
-  CI_l2 <- mod_eif - 1.96 * sqrt(var) 
-  CI_u2 <- mod_eif + 1.96 * sqrt(var) 
-  return(list( est = mod_eif, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2)))
-}
-# S3) PS is correct, but Out is wrong
-modEIF1c<-function(dat){
-  TNDmod_g_col<-glm(V~  C + abs(C) +  sin(pi*C),family=binomial(),data=dat,subset=(dat$Y==0))
-  g1_cont<-predict(TNDmod_g_col,type="response",newdata=as.data.frame(cbind(C=dat$C,V=dat$V,Y=dat$Y)))
-  g1_cont <- pmax(pmin(g1_cont, 1), 0)
-  g0_cont <- 1 - g1_cont
-  TNDmod1<-glm(Y ~ 1,family=binomial(),data=dat)
-  preY=predict(TNDmod1,type="response")
-  
-  TNDmod<-glm(Y~ V,family=binomial(),data=dat)
-  mu1=predict(TNDmod,newdata=as.data.frame(cbind(V=1,C=dat$C)),type="response")
-  mu0=predict(TNDmod,newdata=as.data.frame(cbind(V=0,C=dat$C)),type="response")
-  mu1 <- pmax(pmin(mu1, 1), 0)
-  mu0 <- pmax(pmin(mu0, 1), 0)
-  preY <- pmax(pmin(preY, 1), 0)
-  w1 = (1 - preY)/(1 - mu1)
-  w0 = (1 - preY)/(1 - mu0)
-  Q1 = w1 * mu1
-  Q0 = w0 * mu0
-  
-  A1 <- (1 - dat$Y)*(dat$V - g1_cont)/(g1_cont* (1 - preY))
-  A0 <- (1 - dat$Y)*((1-dat$V) - g0_cont)/(g0_cont* (1 - preY))
-  psi.1 <- mean(dat$Y*dat$V/g1_cont - Q1*A1)
-  psi.0 <- mean(dat$Y*(1-dat$V)/g0_cont - Q0*A0)
-  mod_eif <- psi.1/psi.0
-  eifln <-  ((dat$Y*dat$V/g1_cont - Q1*A1)/psi.1) - ((dat$Y*(1-dat$V)/g0_cont - Q0*A0)/ psi.0)
-  varln <-  var(eifln)/nrow(dat)
-  
-  CI_l1 <- exp(log(mod_eif) - 1.96 * sqrt(varln) )
-  CI_u1 <- exp(log(mod_eif) + 1.96 * sqrt(varln) )
-  
-  eifpsi <- (dat$Y*dat$V/g1_cont - Q1*A1)/psi.0 - (psi.1/psi.0)*(dat$Y*(1-dat$V)/g0_cont - Q0*A0)/psi.0
-  var <- var(eifpsi)/nrow(dat)
-  CI_l2 <- mod_eif - 1.96 * sqrt(var) 
-  CI_u2 <- mod_eif + 1.96 * sqrt(var) 
-  return(list( est = mod_eif, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2)))
-}
-# S4) Both are wrong
-modEIF1d<-function(dat){
-  TNDmod_g_col<-glm(V~  1,family=binomial(),data=dat,subset=(dat$Y==0))
-  g1_cont<-predict(TNDmod_g_col,type="response",newdata=as.data.frame(cbind(C=dat$C,V=dat$V,Y=dat$Y)))
-  g1_cont <- pmax(pmin(g1_cont, 1), 0)
-  g0_cont <- 1 - g1_cont
-  TNDmod1<-glm(Y ~ 1,family=binomial(),data=dat)
-  preY=predict(TNDmod1,type="response")
-  
-  TNDmod<-glm(Y~ V,family=binomial(),data=dat)
-  mu1=predict(TNDmod,newdata=as.data.frame(cbind(V=1,C=dat$C)),type="response")
-  mu0=predict(TNDmod,newdata=as.data.frame(cbind(V=0,C=dat$C)),type="response")
-  mu1 <- pmax(pmin(mu1, 1), 0)
-  mu0 <- pmax(pmin(mu0, 1), 0)
-  preY <- pmax(pmin(preY, 1), 0)
-  w1 = (1 - preY)/(1 - mu1)
-  w0 = (1 - preY)/(1 - mu0)
-  Q1 = w1 * mu1
-  Q0 = w0 * mu0
-  
-  A1 <- (1 - dat$Y)*(dat$V - g1_cont)/(g1_cont* (1 - preY))
-  A0 <- (1 - dat$Y)*((1-dat$V) - g0_cont)/(g0_cont* (1 - preY))
-  psi.1 <- mean(dat$Y*dat$V/g1_cont - Q1*A1)
-  psi.0 <- mean(dat$Y*(1-dat$V)/g0_cont - Q0*A0)
-  mod_eif <- psi.1/psi.0
-  eifln <-  ((dat$Y*dat$V/g1_cont - Q1*A1)/psi.1) - ((dat$Y*(1-dat$V)/g0_cont - Q0*A0)/ psi.0)
-  varln <-  var(eifln)/nrow(dat)
-  
-  CI_l1 <- exp(log(mod_eif) - 1.96 * sqrt(varln) )
-  CI_u1 <- exp(log(mod_eif) + 1.96 * sqrt(varln) )
-  
-  eifpsi <- (dat$Y*dat$V/g1_cont - Q1*A1)/psi.0 - (psi.1/psi.0)*(dat$Y*(1-dat$V)/g0_cont - Q0*A0)/psi.0
-  var <- var(eifpsi)/nrow(dat)
-  CI_l2 <- mod_eif - 1.96 * sqrt(var) 
-  CI_u2 <- mod_eif + 1.96 * sqrt(var) 
-  return(list( est = mod_eif, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2)))
+mod_OutRegGLM <- function(TNDdat, res, bootstrap_CI = TRUE, ps_model, out_model1, out_model2){
+  mod_OR1 <- mean(res$mu1 * res$w1) / mean(res$mu0 * res$w0)
+  if (bootstrap_CI) {
+    nbs <- 200
+    bsest <- rep(NA, nbs)
+    
+    for(i in 1:nbs){
+      resamps <- sample(1:nrow(TNDdat), size = nrow(TNDdat), replace = TRUE)
+      datk <- TNDdat[resamps,]
+      res <- element_glm(datk, ps_model, out_model1, out_model2)
+      bsest[i] <- mean(res$mu1 * res$w1) / mean(res$mu0 * res$w0)
+    }
+    bs_var <- var(bsest)
+    CI <- quantile(bsest, c(0.025, 0.975), na.rm = TRUE)
+  } else {
+    CI <- NA
+  }
+  return(list(est = mod_OR1, CI.OR = CI))
 }
 
 
-######################################################################
-### EIF 2 (Equation 11)
-# EIF estimator 2:S1) both are correct
-modEIF2a<-function(dat){
-  TNDmod_g_col<-glm(V~  C + abs(C) +  sin(pi*C),family=binomial(),data=dat,subset=(dat$Y==0))
-  g1_cont<-predict(TNDmod_g_col,type="response",newdata=as.data.frame(cbind(C=dat$C,V=dat$V,Y=dat$Y)))
-  g1_cont <- pmax(pmin(g1_cont, 1), 0)
-  g0_cont <- 1 - g1_cont
-  
-  TNDmod<-(glm(Y~ V + C + exp(C),family=binomial(),data=dat)) 
-  mu1=predict(TNDmod,newdata=as.data.frame(cbind(V=1,C=dat$C)),type="response")
-  mu0=predict(TNDmod,newdata=as.data.frame(cbind(V=0,C=dat$C)),type="response")
-  mu1 <- pmax(pmin(mu1, 1), 0)
-  mu0 <- pmax(pmin(mu0, 1), 0)
-  
-  A1 <- (1 - dat$Y)*(dat$V - g1_cont)/(g1_cont* (1 - mu1))
-  A0 <- (1 - dat$Y)*((1-dat$V) - g0_cont)/(g0_cont* (1 - mu0))
-  
-  psi.1 <- mean(dat$Y*dat$V/g1_cont - mu1*A1)
-  psi.0 <- mean(dat$Y*(1-dat$V)/g0_cont - mu0*A0)
-  mod_eif2 <- psi.1/psi.0
-  eifln <-  ((dat$Y*dat$V/g1_cont - mu1*A1)/psi.1) - ((dat$Y*(1-dat$V)/g0_cont - mu0*A0)/ psi.0)
-  varln <-  var(eifln)/nrow(dat)
-  
-  CI_l1 <- exp(log(mod_eif2) - 1.96 * sqrt(varln) )
-  CI_u1 <- exp(log(mod_eif2) + 1.96 * sqrt(varln) )
-  
-  eifpsi <- (dat$Y*dat$V/g1_cont - mu1*A1)/psi.0 - (psi.1/psi.0)*(dat$Y*(1-dat$V)/g0_cont - mu0*A0)/psi.0
-  var <- var(eifpsi)/nrow(dat)
-  CI_l2 <- mod_eif2 - 1.96 * sqrt(var) 
-  CI_u2 <- mod_eif2 + 1.96 * sqrt(var) 
-  return(list( est = mod_eif2, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2)))
+output_dir <- ""
+
+
+TNDresGLM <- function(B = 1000, ssize = 1000, em = -0.15, bootstrap_CI = FALSE, ps_model, out_model1, out_model2) {
+  # Construct the output file name based on the method
+  output_file <- paste0(output_dir, "Nov5GLMBotht", ssize, "em_", em, ".txt")
+  # Main loop to run simulations and apply chosen methods
+  for (i in 1:B) {
+    # Generate data
+    TNDdat <- datagen(ssize = ssize, em = em)
+    res <- element_glm(TNDdat, ps_model = ps_model, out_model1 = out_model1, out_model2 = out_model2)
+    
+    est1 <- mod_IPW(TNDdat, res, bootstrap_CI = bootstrap_CI, ps_model, out_model1, out_model2)
+    est1_val <- est1$est
+    CI1 <- est1$CI
+    
+    est2 <- mod_OutRegGLM(TNDdat, res, bootstrap_CI = bootstrap_CI, ps_model, out_model1, out_model2)
+    est2_val <- est2$est
+    CI2 <- est2$CI.OR
+    
+    est3 <- mod_EIF2(TNDdat, res, bootstrap_CI = F)
+    est3_val <- est3$est
+    TNDCI1 <- est3$CI1
+    TNDCI2 <- est3$CI2
+    TNDCI3 <- est3$CI3
+    
+    # Save results
+    write(
+      c(i, est1_val, CI1, est2_val, CI2, est3_val,TNDCI1, TNDCI2, TNDCI3),
+      file = output_file,
+      ncolumns = 50,
+      append = TRUE
+    )
+  }
 }
 
-modEIF2a(dat)
-modEIF2b<-function(dat){
-  TNDmod_g_col<-glm(V~ 1,family=binomial(),data=dat,subset=(dat$Y==0))
-  g1_cont<-predict(TNDmod_g_col,type="response",newdata=as.data.frame(cbind(C=dat$C,V=dat$V,Y=dat$Y)))
-  g1_cont <- pmax(pmin(g1_cont, 1), 0)
-  g0_cont <- 1 - g1_cont
-  
-  TNDmod<-(glm(Y~ V + C + exp(C),family=binomial(),data=dat)) 
-  mu1=predict(TNDmod,newdata=as.data.frame(cbind(V=1,C=dat$C)),type="response")
-  mu0=predict(TNDmod,newdata=as.data.frame(cbind(V=0,C=dat$C)),type="response")
-  mu1 <- pmax(pmin(mu1, 1), 0)
-  mu0 <- pmax(pmin(mu0, 1), 0)
-  A1 <- (1 - dat$Y)*(dat$V - g1_cont)/(g1_cont* (1 - mu1))
-  A0 <- (1 - dat$Y)*((1-dat$V) - g0_cont)/(g0_cont* (1 - mu0))
-  
-  psi.1 <- mean(dat$Y*dat$V/g1_cont - mu1*A1)
-  psi.0 <- mean(dat$Y*(1-dat$V)/g0_cont - mu0*A0)
-  mod_eif2 <- psi.1/psi.0
-  eifln <-  ((dat$Y*dat$V/g1_cont - mu1*A1)/psi.1) - ((dat$Y*(1-dat$V)/g0_cont - mu0*A0)/ psi.0)
-  varln <-  var(eifln)/nrow(dat)
-  
-  CI_l1 <- exp(log(mod_eif2) - 1.96 * sqrt(varln) )
-  CI_u1 <- exp(log(mod_eif2) + 1.96 * sqrt(varln) )
-  
-  eifpsi <- (dat$Y*dat$V/g1_cont - mu1*A1)/psi.0 - (psi.1/psi.0)*(dat$Y*(1-dat$V)/g0_cont - mu0*A0)/psi.0
-  var <- var(eifpsi)/nrow(dat)
-  CI_l2 <- mod_eif2 - 1.96 * sqrt(var) 
-  CI_u2 <- mod_eif2 + 1.96 * sqrt(var) 
-  return(list( est = mod_eif2, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2)))
+# C + log(C) + sin(pi * C)
+# V + C + V * C + + 0.5 * exp(C)* (1 + 0.15 * cos(C))
+ps_model <- V ~ C + log(C) + sin(pi * C)
+out_model1 <- Y ~ C + V + I(V * C) + exp(C) + exp(C) * cos(C)
+out_model2 <- Y ~ C + exp(C) + exp(C) * cos(C)
+TNDresGLM(B = 500, ssize = 8000, em = -0.25, bootstrap_CI = TRUE, ps_model = ps_model, out_model1 = out_model1, out_model2 = out_model2)
+
+
+
+
+
+
+
+
+
+####################################################################################
+####### Logistic regression
+#######
+####################################################################################
+
+
+mu.fit <- glm(out_model1,family="binomial", data=TNDdat)
+exp(coef(mu.fit)["V"])
+
+mod_logistic <- function(TNDdat, bootstrap_CI = TRUE, out_model){
+  mu.fit <- glm(out_model,family="binomial", data=TNDdat)
+  res.logistic <- exp(coef(mu.fit)["V"])
+  if (bootstrap_CI) {
+    nbs <- 200
+    bsest <- rep(NA, nbs)
+    
+    for(i in 1:nbs){
+      resamps <- sample(1:nrow(TNDdat), size = nrow(TNDdat), replace = TRUE)
+      datk <- TNDdat[resamps,]
+      mu.fit <- glm(out_model,family="binomial", data=datk)
+      bsest[i] <- exp(coef(mu.fit)["V"])
+    }
+    bs_var <- var(bsest)
+    CI <- quantile(bsest, c(0.025, 0.975), na.rm = TRUE)
+  } else {
+    CI <- NA
+  }
+  return(list(est = res.logistic, CI.logistic = CI))
 }
 
-modEIF2c<-function(dat){
-  TNDmod_g_col<-glm(V~  C + abs(C) +  sin(pi*C),family=binomial(),data=dat,subset=(dat$Y==0))
-  g1_cont<-predict(TNDmod_g_col,type="response",newdata=as.data.frame(cbind(C=dat$C,V=dat$V,Y=dat$Y)))
-  g1_cont <- pmax(pmin(g1_cont, 1), 0)
-  g0_cont <- 1 - g1_cont
-  
-  TNDmod<-(glm(Y~ V,family=binomial(),data=dat)) 
-  mu1=predict(TNDmod,newdata=as.data.frame(cbind(V=1,C=dat$C)),type="response")
-  mu0=predict(TNDmod,newdata=as.data.frame(cbind(V=0,C=dat$C)),type="response")
-  mu1 <- pmax(pmin(mu1, 1), 0)
-  mu0 <- pmax(pmin(mu0, 1), 0)
-  A1 <- (1 - dat$Y)*(dat$V - g1_cont)/(g1_cont* (1 - mu1))
-  A0 <- (1 - dat$Y)*((1-dat$V) - g0_cont)/(g0_cont* (1 - mu0))
-  
-  psi.1 <- mean(dat$Y*dat$V/g1_cont - mu1*A1)
-  psi.0 <- mean(dat$Y*(1-dat$V)/g0_cont - mu0*A0)
-  mod_eif2 <- psi.1/psi.0
-  eifln <-  ((dat$Y*dat$V/g1_cont - mu1*A1)/psi.1) - ((dat$Y*(1-dat$V)/g0_cont - mu0*A0)/ psi.0)
-  varln <-  var(eifln)/nrow(dat)
-  
-  CI_l1 <- exp(log(mod_eif2) - 1.96 * sqrt(varln) )
-  CI_u1 <- exp(log(mod_eif2) + 1.96 * sqrt(varln) )
-  
-  eifpsi <- (dat$Y*dat$V/g1_cont - mu1*A1)/psi.0 - (psi.1/psi.0)*(dat$Y*(1-dat$V)/g0_cont - mu0*A0)/psi.0
-  var <- var(eifpsi)/nrow(dat)
-  CI_l2 <- mod_eif2 - 1.96 * sqrt(var) 
-  CI_u2 <- mod_eif2 + 1.96 * sqrt(var) 
-  return(list( est = mod_eif2, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2)))
+mod_logistic(TNDdat, out_model = out_model1)
+
+TNDresGLM <- function(B = 1000, ssize = 1000, em = -0.15, bootstrap_CI = FALSE, ps_model, out_model1) {
+  # Construct the output file name based on the method
+  output_file <- paste0(output_dir, "logistic", ssize, "em_", em, ".txt")
+  # Main loop to run simulations and apply chosen methods
+  for (i in 1:B) {
+    # Generate data
+    TNDdat <- datagen(ssize = ssize, em = em)
+    
+    est0 <- mod_logistic(TNDdat, out_model = out_model1)
+    est0_val <- est0$est
+    CI0 <- est0$CI.logistic
+    # Save results
+    write(
+      c(i, est0_val, CI0),
+      file = output_file,
+      ncolumns = 50,
+      append = TRUE
+    )
+  }
 }
 
-modEIF2d<-function(dat){
-  TNDmod_g_col<-glm(V~ 1,family=binomial(),data=dat,subset=(dat$Y==0))
-  g1_cont<-predict(TNDmod_g_col,type="response",newdata=as.data.frame(cbind(C=dat$C,V=dat$V,Y=dat$Y)))
-  g1_cont <- pmax(pmin(g1_cont, 1), 0)
-  g0_cont <- 1 - g1_cont
+out_model1 <- Y ~ C + V
+#TNDresGLM(B = 500, ssize = 1000, em = 0.25, bootstrap_CI = TRUE, ps_model = ps_model, out_model1 = out_model1, out_model2 = out_model2)
+
+
+library(geex)
+
+psglm <- glm(V ~ C, data = subset(data,data$Y==0), family = binomial)
+
+# Define the estimating function based on the system of equations
+my_estfun <- function(data) {
+  Y <- data$Y
+  V <- data$V
+  C <- as.model.matrix(subset(data, select = -c(Y, V))) # assuming C is a matrix of covariates
   
-  TNDmod<-(glm(Y~ V,family=binomial(),data=dat)) 
-  mu1=predict(TNDmod,newdata=as.data.frame(cbind(V=1,C=dat$C)),type="response")
-  mu0=predict(TNDmod,newdata=as.data.frame(cbind(V=0,C=dat$C)),type="response")
-  mu1 <- pmax(pmin(mu1, 1), 0)
-  mu0 <- pmax(pmin(mu0, 1), 0)
-  A1 <- (1 - dat$Y)*(dat$V - g1_cont)/(g1_cont* (1 - mu1))
-  A0 <- (1 - dat$Y)*((1-dat$V) - g0_cont)/(g0_cont* (1 - mu0))
-  
-  psi.1 <- mean(dat$Y*dat$V/g1_cont - mu1*A1)
-  psi.0 <- mean(dat$Y*(1-dat$V)/g0_cont - mu0*A0)
-  mod_eif2 <- psi.1/psi.0
-  eifln <-  ((dat$Y*dat$V/g1_cont - mu1*A1)/psi.1) - ((dat$Y*(1-dat$V)/g0_cont - mu0*A0)/ psi.0)
-  varln <-  var(eifln)/nrow(dat)
-  
-  CI_l1 <- exp(log(mod_eif2) - 1.96 * sqrt(varln) )
-  CI_u1 <- exp(log(mod_eif2) + 1.96 * sqrt(varln) )
-  
-  eifpsi <- (dat$Y*dat$V/g1_cont - mu1*A1)/psi.0 - (psi.1/psi.0)*(dat$Y*(1-dat$V)/g0_cont - mu0*A0)/psi.0
-  var <- var(eifpsi)/nrow(dat)
-  CI_l2 <- mod_eif2 - 1.96 * sqrt(var) 
-  CI_u2 <- mod_eif2 + 1.96 * sqrt(var) 
-  return(list( est = mod_eif2, varln = varln, var = var, CI1 =  c(CI_l1, CI_u1), CI2 =  c(CI_l2, CI_u2)))
+  # Define the estimating function that depends on theta
+  function(theta) {
+    alpha <- theta[1:length(C[1, ])]  # extracting alpha (logistic regression coefficients)
+    psi_v <- theta[length(C[1, ]) + 1]  # psi_v parameter
+    psi_v0 <- theta[length(C[1, ]) + 2]  # psi_v0 parameter
+    psi_mRR <- theta[length(C[1, ]) + 3]  # psi_mRR parameter
+    
+    expit_C_alpha <- 1 / (1 + exp(-C %*% alpha))  # expit(C_i^T * alpha)
+    
+    # The system of equations
+    c(
+      (Y == 0) * ((V - expit_C_alpha) %*% C),  # First equation
+      (q0 * Y * V) / expit_C_alpha - psi_v,  # Second equation
+      (q0 * Y * (1 - V)) / (1 - expit_C_alpha) - psi_v0,  # Third equation
+      (psi_v / psi_v0) - psi_mRR  # Fourth equation
+    )
+  }
 }
 
-CI1=CI2=CI3=CI3.2=CI4=CI4.2=CI5=CI5.2=CI6=CI6.2=CI7=CI7.2=CI8=CI8.2=CI9=CI9.2=CI10=CI10.2=CI11 = CI12 = c(0,0)
+# Example data
+set.seed(123)
+n <- 100
+data <- data.frame(
+  Y = rbinom(n, 1, 0.5),      # Binary outcome Y
+  V = rbinom(n, 1, 0.5),      # Binary or continuous variable V
+  C = matrix(rnorm(n * 3), n)  # Matrix of covariates C (3 covariates in this example)
+)
 
-for (i in 1:1000){
-  dat<-datagen(ssize=250, em=0)
-  #######################################################
-  # Marginal RR 
-  # IPW ps correct
-  est1<-mod_IPW_c(dat)$est
-  CI1 <- mod_IPW_c(dat)$CI
-  # IPW ps wrong
-  est2<-mod_IPW_w(dat)$est
-  CI2 <- mod_IPW_w(dat)$CI
-  #######################################################
-  # EIF estimator 1
-  #Case 1: All correct
-  res3 <- modEIF1a(dat)
-  est3 <- res3$est
-  CI3 <-  res3$CI1
-  CI3.2 <-  res3$CI2
-  #######################################################
-  #Case 2: Outcome model is right, but PS is not
-  res4 <- modEIF1b(dat)
-  est4 <- res4$est
-  CI4 <-  res4$CI1
-  CI4.2 <-  res4$CI2
-  #######################################################
-  # Case 3: (PS is correct, but the outcome model is not correct)
-  res5 <- modEIF1c(dat)
-  est5 <- res5$est
-  CI5 <-  res5$CI1
-  CI5.2 <-  res5$CI2
-  #######################################################
-  # Both are not correct
-  res6 <- modEIF1d(dat)
-  est6 <- res6$est
-  CI6 <-  res6$CI1
-  CI6.2 <-  res6$CI2
-  #######################################################
-  # EIF estimator 2
-  #Case 1: All correct
-  res7 <- modEIF2a(dat)
-  est7 <- res7$est
-  CI7 <-  res7$CI1
-  CI7.2 <-  res7$CI2
-  #######################################################
-  #Case 2: Outcome model is right, but PS is not
-  res8 <- modEIF2b(dat)
-  est8 <- res8$est
-  CI8 <-  res8$CI1
-  CI8.2 <-  res8$CI2
-  #######################################################
-  # Case 3: (PS is correct, but the outcome model is not correct)
-  res9 <- modEIF2c(dat)
-  est9 <- res9$est
-  CI9 <-  res9$CI1
-  CI9.2 <-  res9$CI2
-  #######################################################
-  # Both are not correct
-  res10 <- modEIF2d(dat)
-  est10 <- res10$est
-  CI10 <-  res10$CI1
-  CI10.2 <-  res10$CI2
-  #######################################################
-  # OR estimators
-  est11 <- mod_OR_c(dat)$est
-  CI11 <- mod_OR_c(dat)$CI
-  est12 <- mod_OR_w(dat)$est
-  CI12 <- mod_OR_w(dat)$CI
-  write(c(i,est1,CI1, est2,CI2, est3,CI3,CI3.2,est4,CI4,CI4.2, est5,CI5,CI5.2, 
-          est6,CI6,CI6.2, est7,CI7,CI7.2,est8,CI8, CI8.2,est9,CI9, CI9.2,est10,CI10,CI10.2, est11, CI11, est12, CI12),file="Study2results250_0808CI.txt",ncolumns=70,append=T)
-}
+# Define the q0 constant (assumed constant here, adjust as needed)
+q0 <- 1
+
+# Use m_estimate to estimate the parameters
+results <- m_estimate(
+  estFUN = my_estfun,
+  data = data,
+  root_control = setup_root_control(start = c(rep(0, 3), 1, 1, 1))  # starting values for theta (alpha, psi_v, psi_v0, psi_mRR)
+)
 
 
-
-
-res1<-read.table("Study2results250_0808CI.txt",header=F)
-head(res1)
-res1 <- na.omit(res1)
-dim(res1)
-#truth mRR
-psi = 0.128
-colnames(res1)[c(2, 5, seq(8, 44,5), 48,51)] <- c("IPWCorrect", "IPWrong", "BothCorrect1", "OutCorrect1", "PSCorrect1", "BothWrong1", "BothCorrect2", "OutCorrect2", "PSCorrect2", "BothWrong2",  "ORCorrect", "ORWrong")
-(apply(res1[, c(2, 5, seq(8, 44,5), 48,51)], 2, mean) - psi)
-(apply(res1[, c(2, 5, seq(8, 44,5), 48,51)], 2, median) - psi)
-apply(res1[,c(2, 5, seq(8, 44,5), 48,51)], 2, sd)
-
-
-#CIs
-mean(psi<=res1$V4 & psi>=res1$V3) # correct ipw
-mean(psi<=res1$V7 & psi>=res1$V6) # incorrect ipw
-mean(psi<=res1$V10 & psi>=res1$V9) # bothcorrect ief 1
-mean(psi<=res1$V30 & psi>=res1$V29) # bothcorrect tnddr
-mean(psi<=res1$V35 & psi>=res1$V34) # out cor tnddr
-mean(psi<=res1$V40 & psi>=res1$V39) # ps cor tnddr
-mean(psi<=res1$V45 & psi>=res1$V44) # bothcorrect itnddr
-
-
-mean(psi<=res1$V50 & psi>=res1$V49) # out correct
-mean(psi<=res1$V53 & psi>=res1$V52) # out wrong
-
+alpha <- rep(0,3)
+# Check the results
+summary(results)
