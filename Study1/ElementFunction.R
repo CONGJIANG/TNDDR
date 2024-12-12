@@ -488,7 +488,7 @@ mod_TNDDR <- function(TNDdat, res){
   CI_l2 <- mod_eif2 - 1.96 * sqrt(var)
   CI_u2 <- mod_eif2 + 1.96 * sqrt(var)
   
-  varn2 <- mean((mod_eif2* TNDdat$Y*TNDdat$V/res$g1 - res$mu1*A.1 - TNDdat$Y*(1-TNDdat$V)/res$g0 - res$mu0*A.0)^2)
+  varn2 <- mean((mod_eif2* (TNDdat$Y*(1-TNDdat$V)/res$g0 - res$mu0*A.0) - (TNDdat$Y*TNDdat$V/res$g1 - res$mu1*A.1) )^2)
   denJ <- psi.0^2
   var2 <- varn2/(denJ * nrow(TNDdat))
   CI_l3 <- mod_eif2 - 1.96 * sqrt(var2)
